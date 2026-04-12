@@ -6,8 +6,8 @@ use bytes::Bytes;
 use lazy_static::lazy_static;
 use librespot::core::session::Session;
 use librespot::core::{SpotifyId, SpotifyUri};
-use librespot::metadata::{Artist, Metadata};
-use librespot::metadata::image::{Image, Images};
+use librespot::metadata::Metadata;
+use librespot::metadata::image::Image;
 use regex::Regex;
 
 use crate::encoder::tags::Tags;
@@ -84,54 +84,43 @@ impl Track {
         Ok(Track { uri })
     }
 
-    pub async fn metadata(&self, session: &Session) -> Result<CustomMetadata> {
-        match &self.uri {
-            SpotifyUri::Track { .. } => {
-                let metadata = librespot::metadata::Track::get(session, &self.uri)
-                    .await
-                    .map_err(|_| anyhow::anyhow!("Failed to get metadata"))?;
-                let mut artists = Vec::new();
-                for artist in metadata.artists.iter() {
-                    artists.push(
-                        Artist::get(session, &artist.id)
-                            .await
-                            .map_err(|_| anyhow::anyhow!("Failed to get artist"))?,
-                    );
-                }
-                let album = librespot::metadata::Album::get(session, &metadata.album.id)
-                    .await
-                    .map_err(|_| anyhow::anyhow!("Failed to get album"))?;
+    pub async fn metadata(&self, session: &Session) -> Result<TrackMetadata> {
+        let metadata = librespot::metadata::Track::get(session, &self.uri)
+            .await
+            .map_err(|_| anyhow::anyhow!("Failed to get metadata"))?;
 
-                let covers = metadata.album.covers.clone();
-
-                Ok(CustomMetadata::from(
-                    metadata,
-                    artists,
-                    album,
-                    get_cover(&covers, &session).await,
-                ))
-            },
-            SpotifyUri::Episode { .. } => {
-                let metadata = librespot::metadata::Episode::get(session, &self.uri)
+        let mut artists = Vec::new();
+        for artist in metadata.artists.iter() {
+            artists.push(
+                librespot::metadata::Artist::get(session, &artist.id)
                     .await
-                    .map_err(|_| anyhow::anyhow!("Failed to get metadata"))?;
-
-                Ok(CustomMetadata::CustomEpisodeMetadata {
-                    show_name: metadata.show_name,
-                    episode_name: metadata.name,
-                    duration: metadata.duration,
-                    album_cover: get_cover(&metadata.covers, session).await,
-                })
-            }
-            _ => Err(anyhow::anyhow!("Failed to get metadata"))
+                    .map_err(|_| anyhow::anyhow!("Failed to get artist"))?,
+            );
         }
-    }
-}
 
-async fn get_cover(covers: &Images, session: &Session) -> Option<Bytes> {
-    match covers.first() {
-        Some(c) => session.spclient().get_image(&c.id).await.ok(),
-        None => None
+        let album = librespot::metadata::Album::get(session, &metadata.album.id)
+            .await
+            .map_err(|_| anyhow::anyhow!("Failed to get album"))?;
+
+        let covers = album.covers.clone();
+        let session = session.clone();
+
+        let image_retriever: AsyncFn<Bytes> = Arc::new(move || {
+            let covers = covers.clone();
+            let session = session.clone();
+
+            Box::pin(async move {
+                let cover = covers.first()?;
+                session.spclient().get_image(&cover.id).await.ok()
+            })
+        });
+
+        Ok(TrackMetadata::from(
+            metadata,
+            artists,
+            album,
+            image_retriever,
+        ))
     }
 }
 
@@ -220,44 +209,20 @@ impl TrackCollection for Playlist {
 }
 
 #[derive(Clone)]
-pub enum CustomMetadata {
-    CustomEpisodeMetadata {
-        duration: i32,
-        episode_name: String,
-        show_name: String,
-        album_cover: Option<Bytes>,
-    },
-    CustomTrackMetadata {
-        artists: Vec<ArtistMetadata>,
-        track_name: String,
-        album: AlbumMetadata,
-        duration: i32,
-        album_cover: Option<Bytes>,
-    }
+pub struct TrackMetadata {
+    pub artists: Vec<ArtistMetadata>,
+    pub track_name: String,
+    pub album: AlbumMetadata,
+    pub duration: i32,
+    image_retriever: AsyncFn<Bytes>,
 }
 
-impl CustomMetadata {
-    pub fn track_name(&self) -> &String {
-        match &self {
-            CustomMetadata::CustomEpisodeMetadata { episode_name, .. } => episode_name,
-            CustomMetadata::CustomTrackMetadata { track_name, .. } => track_name,
-        }
-    }
-
-    pub fn duration(&self) -> usize {
-        let duration = match &self {
-            CustomMetadata::CustomEpisodeMetadata { duration, .. } => *duration,
-            CustomMetadata::CustomTrackMetadata { duration, .. } => *duration,
-        };
-
-        duration as usize
-    }
-
+impl TrackMetadata {
     pub fn from(
         track: librespot::metadata::Track,
-        artists: Vec<Artist>,
+        artists: Vec<librespot::metadata::Artist>,
         album: librespot::metadata::Album,
-        album_cover: Option<Bytes>
+        image_retriever: AsyncFn<Bytes>,
     ) -> Self {
         let artists = artists
             .iter()
@@ -265,75 +230,58 @@ impl CustomMetadata {
             .collect();
         let album = AlbumMetadata::from(album);
 
-        CustomMetadata::CustomTrackMetadata {
+        TrackMetadata {
             artists,
             track_name: track.name.clone(),
             album,
             duration: track.duration,
-            album_cover,
+            image_retriever,
         }
     }
 
     pub fn approx_size(&self) -> usize {
-        let duration = self.duration() / 1000;
+        let duration = self.duration / 1000;
         let sample_rate = 44100;
         let channels = 2;
         let bits_per_sample = 32;
         let bytes_per_sample = bits_per_sample / 8;
-        duration * sample_rate * channels * bytes_per_sample
+        (duration as usize) * sample_rate * channels * bytes_per_sample
     }
 
     pub async fn tags(&self) -> Result<Tags> {
-        let tags = match &self {
-            CustomMetadata::CustomEpisodeMetadata { episode_name, album_cover, show_name, ..} => {
-                Tags {
-                    title: episode_name.clone(),
-                    album_cover: album_cover.clone(),
-                    album_title: show_name.clone(),
-                    artists: vec![]
-                }
-            },
-            CustomMetadata::CustomTrackMetadata { track_name, artists, album, album_cover, .. } => {
-                Tags {
-                    title: track_name.clone(),
-                    artists: artists.iter().map(|a| a.name.clone()).collect(),
-                    album_title: album.name.clone(),
-                    album_cover: album_cover.clone(),
-                }
-            }
+        let tags = Tags {
+            title: self.track_name.clone(),
+            artists: self.artists.iter().map(|a| a.name.clone()).collect(),
+            album_title: self.album.name.clone(),
+            album_cover: (self.image_retriever)().await,
         };
         Ok(tags)
     }
 }
 
-impl ToString for CustomMetadata {
+impl ToString for TrackMetadata {
     fn to_string(&self) -> String {
-        match &self {
-            CustomMetadata::CustomTrackMetadata { artists, track_name, .. } => {
-                if artists.len() > 3 {
-                    let artists_name = artists
-                        .iter()
-                        .take(3)
-                        .map(|artist| artist.name.clone())
-                        .collect::<Vec<String>>()
-                        .join(", ");
-                    return clean_invalid_characters(format!(
-                        "{}, ... - {}",
-                        artists_name, track_name
-                    ));
-                }
-
-                let artists_name = artists
-                    .iter()
-                    .map(|artist| artist.name.clone())
-                    .collect::<Vec<String>>()
-                    .join(", ");
-                clean_invalid_characters(format!("{} - {}", artists_name, track_name))
-            },
-            CustomMetadata::CustomEpisodeMetadata { episode_name, show_name, .. } => {
-                clean_invalid_characters(format!("{} - {}", show_name, episode_name))
-            }
+        if self.artists.len() > 3 {
+            let artists_name = self
+                .artists
+                .iter()
+                .take(3)
+                .map(|artist| artist.name.clone())
+                .collect::<Vec<String>>()
+                .join(", ");
+            return clean_invalid_characters(format!(
+                "{}, ... - {}",
+                artists_name, self.track_name
+            ));
         }
+
+        let artists_name = self
+            .artists
+            .iter()
+            .map(|artist| artist.name.clone())
+            .collect::<Vec<String>>()
+            .join(", ");
+        clean_invalid_characters(format!("{} - {}", artists_name, self.track_name))
     }
 }
 
