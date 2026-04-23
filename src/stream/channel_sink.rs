@@ -3,7 +3,7 @@ use librespot::playback::audio_backend::SinkError;
 use librespot::playback::convert::Converter;
 use librespot::playback::decoder::AudioPacket;
 
-use crate::track::TrackMetadata;
+use crate::track::CustomMetadata;
 
 pub enum SinkEvent {
     Write {
@@ -22,7 +22,7 @@ pub struct ChannelSink {
 }
 
 impl ChannelSink {
-    pub fn new(track: TrackMetadata) -> (Self, SinkEventChannel) {
+    pub fn new(track: CustomMetadata) -> (Self, SinkEventChannel) {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
 
         (
@@ -35,13 +35,13 @@ impl ChannelSink {
         )
     }
 
-    fn convert_track_duration_to_size(metadata: &TrackMetadata) -> usize {
-        let duration = metadata.duration / 1000;
+    fn convert_track_duration_to_size(metadata: &CustomMetadata) -> usize {
+        let duration = metadata.duration() / 1000;
         let sample_rate = 44100;
         let channels = 2;
         let bits_per_sample = 16;
         let bytes_per_sample = bits_per_sample / 8;
-        (duration as usize) * sample_rate * channels * bytes_per_sample * 2
+        duration * sample_rate * channels * bytes_per_sample * 2
     }
 
     pub fn get_approximate_size(&self) -> usize {
