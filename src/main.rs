@@ -1,8 +1,7 @@
 use spotify_dl::download::{DownloadOptions, Downloader};
 use spotify_dl::encoder::Format;
-use spotify_dl::log;
 use spotify_dl::session::create_session;
-use spotify_dl::track::get_tracks;
+use spotify_dl::{log, utils};
 use structopt::StructOpt;
 
 #[derive(Debug, StructOpt)]
@@ -68,7 +67,7 @@ async fn main() -> anyhow::Result<()> {
 
     let session = create_session().await?;
 
-    let track = get_tracks(opt.tracks, &session).await?;
+    let track = utils::get_tracks(opt.tracks, &session).await?;
 
     let downloader = Downloader::new(session);
     downloader

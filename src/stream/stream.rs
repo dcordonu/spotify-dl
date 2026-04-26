@@ -1,16 +1,15 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::media::media_item::MediaItem;
+use crate::stream::channel_sink::{ChannelSink, SinkEvent};
+use crate::stream::{StreamError, StreamEvent, StreamEventChannel};
 use anyhow::Result;
 use librespot::core::Session;
 use librespot::playback::config::{Bitrate, PlayerConfig};
 use librespot::playback::mixer::NoOpVolume;
 use librespot::playback::player::{Player, PlayerEvent};
 use tokio::sync::mpsc::UnboundedSender;
-
-use crate::stream::channel_sink::{ChannelSink, SinkEvent};
-use crate::stream::{StreamError, StreamEvent, StreamEventChannel};
-use crate::track::Track;
 
 pub struct Stream {
     player_config: PlayerConfig,
@@ -29,7 +28,7 @@ impl Stream {
         }
     }
 
-    pub async fn stream(&self, track: Arc<Track>) -> Result<StreamEventChannel> {
+    pub async fn stream(&self, track: Arc<MediaItem>) -> Result<StreamEventChannel> {
         let metadata = track.metadata(&self.session).await?;
         let (sink, mut channel) = ChannelSink::new(metadata);
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
@@ -40,7 +39,7 @@ impl Stream {
             Box::new(NoOpVolume),
             move || Box::new(sink),
         );
-        
+
         tokio::spawn(async move {
             match tryhard::retry_fn(|| async { Self::load(player.clone(), &track.clone()).await })
                 .retries(3)
@@ -55,24 +54,28 @@ impl Stream {
                             cloned_track,
                             error
                         );
-                        Self::send_event(&tx, StreamEvent::Retry {
-                            attempt: attempt as usize,
-                            max_attempts: 3,
-                        }).await;
+                        Self::send_event(
+                            &tx,
+                            StreamEvent::Retry {
+                                attempt: attempt as usize,
+                                max_attempts: 3,
+                            },
+                        )
+                        .await;
                     }
                 })
                 .exponential_backoff(Duration::from_secs(10))
                 .max_delay(Duration::from_secs(30))
                 .await
             {
-                Ok(_) => tracing::info!("Track loaded successfully: {:?}", track.uri),
+                Ok(_) => tracing::info!("Track loaded successfully: {:?}", track),
                 Err(e) => {
-                    tracing::error!("Failed to load track: {:?}, error: {:?}", track.uri, e);
+                    tracing::error!("Failed to load track: {:?}, error: {:?}", track.uri(), e);
                     Self::send_event(
                         &tx,
                         StreamEvent::Error(StreamError::LoadError(format!(
                             "Failed to load track: {:?}",
-                            track.uri
+                            track.uri()
                         ))),
                     )
                     .await;
@@ -80,7 +83,7 @@ impl Stream {
                 }
             }
 
-            tracing::info!("Streaming track: {:?}", track.uri);
+            tracing::info!("Streaming track: {:?}", track.uri());
 
             while let Some(event) = channel.recv().await {
                 match event {
@@ -110,21 +113,21 @@ impl Stream {
         Ok(rx)
     }
 
-    async fn load(player: Arc<Player>, track: &Track) -> Result<()> {
-        player.load(track.uri.clone(), true, 0);
+    async fn load(player: Arc<Player>, track: &MediaItem) -> Result<()> {
+        player.load(track.uri().clone(), true, 0);
 
-        tracing::info!("Loading track: {:?}", track.uri);
+        tracing::info!("Loading track: {:?}", track.uri());
         loop {
             match player.get_player_event_channel().recv().await {
                 Some(PlayerEvent::Playing { .. })
                 | Some(PlayerEvent::TrackChanged { .. })
                 | Some(PlayerEvent::EndOfTrack { .. }) => {
-                    tracing::info!("Player started playing track: {:?}", track.uri);
+                    tracing::info!("Player started playing track: {:?}", track.uri());
                     break;
                 }
                 Some(PlayerEvent::Unavailable { .. }) => {
-                    tracing::info!("Track is unavailable: {:?}", track.uri);
-                    return Err(anyhow::anyhow!("Could not load track: {:?}", track.uri));
+                    tracing::info!("Track is unavailable: {:?}", track.uri());
+                    return Err(anyhow::anyhow!("Could not load track: {:?}", track.uri()));
                 }
                 _ => {
                     // Ignore other events

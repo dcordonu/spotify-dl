@@ -79,7 +79,6 @@ impl Samples {
             .map(|&sample| (sample >> 8) as i32) // Convert to S24 by shifting down
             .collect()
     }
-
 }
 
 impl Default for Samples {
