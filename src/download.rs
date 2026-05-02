@@ -15,11 +15,11 @@ use librespot::core::session::Session;
 use crate::encoder;
 use crate::encoder::Format;
 use crate::encoder::Samples;
+use crate::media::media_item::MediaItem;
+use crate::media::metadata::MediaItemMetadata;
 use crate::stream::Stream;
 use crate::stream::StreamEvent;
 use crate::stream::StreamEventChannel;
-use crate::track::Track;
-use crate::track::CustomMetadata;
 
 pub struct Downloader {
     session: Session,
@@ -57,7 +57,7 @@ impl Downloader {
 
     pub async fn download_tracks(
         self,
-        tracks: Vec<Track>,
+        tracks: Vec<MediaItem>,
         options: &DownloadOptions,
     ) -> Result<()> {
         futures::stream::iter(tracks)
@@ -70,7 +70,7 @@ impl Downloader {
     }
 
     #[tracing::instrument(name = "download_track", skip(self))]
-    async fn download_track(&self, track: Track, options: &DownloadOptions) -> Result<()> {
+    async fn download_track(&self, track: MediaItem, options: &DownloadOptions) -> Result<()> {
         let metadata = track.metadata(&self.session).await?;
         tracing::info!("Downloading track: {:?}", metadata.track_name());
 
@@ -130,7 +130,7 @@ impl Downloader {
         Ok(())
     }
 
-    fn add_progress_bar(&self, track: &CustomMetadata) -> ProgressBar {
+    fn add_progress_bar(&self, track: &MediaItemMetadata) -> ProgressBar {
         let pb = self
             .progress_bar
             .add(ProgressBar::new(track.approx_size() as u64));
@@ -148,7 +148,7 @@ impl Downloader {
         &self,
         mut rx: StreamEventChannel,
         pb: &ProgressBar,
-        metadata: &CustomMetadata,
+        metadata: &MediaItemMetadata,
     ) -> Result<Samples> {
         let mut samples = Vec::<i32>::new();
         while let Some(event) = rx.recv().await {
@@ -200,6 +200,10 @@ impl Downloader {
         S: Into<String>,
     {
         tracing::error!("Failed to download {}: {}", name, e.into());
-        pb.finish_with_message(console::style(format!("Failed! {}", name)).red().to_string());
+        pb.finish_with_message(
+            console::style(format!("Failed! {}", name))
+                .red()
+                .to_string(),
+        );
     }
 }

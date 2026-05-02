@@ -1,9 +1,8 @@
+use crate::media::metadata::MediaItemMetadata;
 use librespot::playback::audio_backend::Sink;
 use librespot::playback::audio_backend::SinkError;
 use librespot::playback::convert::Converter;
 use librespot::playback::decoder::AudioPacket;
-
-use crate::track::CustomMetadata;
 
 pub enum SinkEvent {
     Write {
@@ -22,7 +21,7 @@ pub struct ChannelSink {
 }
 
 impl ChannelSink {
-    pub fn new(track: CustomMetadata) -> (Self, SinkEventChannel) {
+    pub fn new(track: MediaItemMetadata) -> (Self, SinkEventChannel) {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
 
         (
@@ -35,7 +34,7 @@ impl ChannelSink {
         )
     }
 
-    fn convert_track_duration_to_size(metadata: &CustomMetadata) -> usize {
+    fn convert_track_duration_to_size(metadata: &MediaItemMetadata) -> usize {
         let duration = metadata.duration() / 1000;
         let sample_rate = 44100;
         let channels = 2;
