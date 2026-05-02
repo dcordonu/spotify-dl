@@ -19,7 +19,7 @@ use crate::stream::Stream;
 use crate::stream::StreamEvent;
 use crate::stream::StreamEventChannel;
 use crate::track::Track;
-use crate::track::TrackMetadata;
+use crate::track::CustomMetadata;
 
 pub struct Downloader {
     session: Session,
@@ -72,12 +72,12 @@ impl Downloader {
     #[tracing::instrument(name = "download_track", skip(self))]
     async fn download_track(&self, track: Track, options: &DownloadOptions) -> Result<()> {
         let metadata = track.metadata(&self.session).await?;
-        tracing::info!("Downloading track: {:?}", metadata.track_name);
+        tracing::info!("Downloading track: {:?}", metadata.track_name());
 
         let path = options
             .destination
             .join(metadata.to_string())
-            .with_extension(options.format.extension())
+            .with_added_extension(options.format.extension())
             .to_str()
             .ok_or(anyhow::anyhow!("Could not set the output path"))?
             .to_string();
@@ -85,7 +85,7 @@ impl Downloader {
         if !options.force && PathBuf::from(&path).exists() {
             tracing::info!(
                 "Skipping {}, file already exists. Use --force to force re-downloading the track",
-                &metadata.track_name
+                &metadata.track_name()
             );
             return Ok(());
         }
@@ -112,7 +112,7 @@ impl Downloader {
         tracing::info!("Encoding track: {}", metadata.to_string());
         pb.set_message(format!("Encoding {}", metadata.to_string()));
 
-        let encoder = crate::encoder::get_encoder(options.format);
+        let encoder = encoder::get_encoder(options.format);
         let stream = encoder.encode(samples).await?;
 
         pb.set_message(format!("Writing {}", metadata.to_string()));
@@ -130,7 +130,7 @@ impl Downloader {
         Ok(())
     }
 
-    fn add_progress_bar(&self, track: &TrackMetadata) -> ProgressBar {
+    fn add_progress_bar(&self, track: &CustomMetadata) -> ProgressBar {
         let pb = self
             .progress_bar
             .add(ProgressBar::new(track.approx_size() as u64));
@@ -148,7 +148,7 @@ impl Downloader {
         &self,
         mut rx: StreamEventChannel,
         pb: &ProgressBar,
-        metadata: &TrackMetadata,
+        metadata: &CustomMetadata,
     ) -> Result<Samples> {
         let mut samples = Vec::<i32>::new();
         while let Some(event) = rx.recv().await {
