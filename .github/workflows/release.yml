@@ -3,145 +3,38 @@ name: Release
 on:
   push:
     tags:
-      - '*'
+      - 'v*'
 
 env:
   CARGO_TERM_COLOR: always
 
-permissions:
-  contents: write
-
 jobs:
-
   release:
+    name: Create Release
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
+    permissions:
+      contents: write
+
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v3
-      - name: Update CHANGELOG
-        id: changelog
-        uses: requarks/changelog-action@v1
+        uses: actions/checkout@v4
+
+      - name: Get version from Cargo.toml
+        id: version
+        run: |
+          VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*= "\(.*\)"/\1/')
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Build release binary
+        run: cargo build --release --locked
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
         with:
-          token: ${{ github.token }}
-          tag: ${{ github.ref_name }}
-      - name: Create Release
-        uses: ncipollo/release-action@v1
-        with:
-          allowUpdates: true
-          draft: false
-          makeLatest: true
-          name: ${{ github.ref_name }}
-          body: ${{ steps.changelog.outputs.changes }}
-          token: ${{ secrets.GITHUB_TOKEN }}
-          tag: ${{ github.ref_name }}
-      - name: Commit CHANGELOG.md
-        uses: stefanzweifel/git-auto-commit-action@v4
-        with:
-          branch: master
-          commit_message: 'docs: update CHANGELOG.md for ${{ github.ref_name }} [skip ci]'
-          file_pattern: CHANGELOG.md
+          tag_name: ${{ github.ref_name }}  # Uses the actual tag pushed
+          name: v${{ steps.version.outputs.version }}
+          generate_release_notes: true
+          files: target/release/spotify-dl
 
-  linux:
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-    needs: release
-    steps:
-    - uses: actions/checkout@v3
-    - name: install Rust stable
-      uses: dtolnay/rust-toolchain@stable
-    - name: Build
-      run: | 
-        cargo build --verbose --release
-    - name: Rename binary
-      run: | 
-        mv target/release/spotify-dl target/release/spotify-dl.linux-x86_64
-    - name: Upload Linux Artifact
-      uses: ncipollo/release-action@v1
-      with:
-        allowUpdates: True
-        makeLatest: True
-        omitBody: True
-        omitBodyDuringUpdate: True
-        omitNameDuringUpdate: True
-        artifacts: target/release/spotify-dl.linux-x86_64
-        token: ${{ secrets.GITHUB_TOKEN }}
-
-  macos:
-    runs-on: macos-latest
-    strategy:
-      fail-fast: false
-    needs: release
-    steps:
-    - uses: actions/checkout@v3
-    - name: install Rust stable
-      uses: dtolnay/rust-toolchain@stable
-    - name: Build
-      run: | 
-        cargo build --verbose --release
-    - name: Rename binary
-      run: | 
-        mv target/release/spotify-dl target/release/spotify-dl.macos-aarch64
-    - name: Upload MacOS Artifact
-      uses: ncipollo/release-action@v1
-      with:
-        allowUpdates: True
-        makeLatest: True
-        omitBody: True
-        omitBodyDuringUpdate: True
-        omitNameDuringUpdate: True
-        artifacts: target/release/spotify-dl.macos-aarch64
-        token: ${{ secrets.GITHUB_TOKEN }}
-
-  windows:
-    runs-on: windows-latest
-    strategy:
-      fail-fast: false
-    needs: release
-    steps:
-    - uses: actions/checkout@v3
-    - name: install Rust stable
-      uses: dtolnay/rust-toolchain@stable
-    - name: Build
-      run: | 
-        cargo build --verbose --release
-    - name: Rename binary
-      run: | 
-        mv target/release/spotify-dl.exe target/release/spotify-dl.windows-x86_64
-    - name: Upload Windows Artifact
-      uses: ncipollo/release-action@v1
-      with:
-        allowUpdates: True
-        makeLatest: True
-        omitBody: True
-        omitBodyDuringUpdate: True
-        omitNameDuringUpdate: True
-        artifacts: target/release/spotify-dl.windows-x86_64
-        token: ${{ secrets.GITHUB_TOKEN }}
-
-  cargo:
-    runs-on: ubuntu-latest
-    steps:
-    - uses: actions/checkout@v3
-    - name: install Rust stable
-      uses: dtolnay/rust-toolchain@stable
-    - name: Build
-      run: | 
-        cargo build --verbose --release
-    - name: Run cargo publish
-      run: | 
-        cargo publish --token ${{ secrets.CARGO_TOKEN }}
-
-  homebrew:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Update Hombrew formula
-        uses: dawidd6/action-homebrew-bump-formula@v3
-        with:
-          tap: guillemcastro/spotify-dl
-          formula: spotify-dl
-          token: ${{ secrets.HOMEBREW_TOKEN }}
-          tag: ${{ github.ref }}
-          no_fork: true
+      - name: Verify binary exists
+        run: test -f target/release/spotify-dl || (echo "Binary not found" && exit 1)
